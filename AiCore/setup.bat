@@ -108,26 +108,26 @@ echo [OK] Electron setup complete!
 
 cd ..
 
-echo.
-echo ========================================
-echo          Setup Complete!
-echo ========================================
-echo.
-echo Next Steps:
-echo.
-echo 1. Start the backend:
-echo    cd backend
-echo    venv\Scripts\activate.bat
-echo    python main.py
-echo.
-echo 2. In a NEW terminal, start the frontend:
-echo    cd frontend
-echo    npm run dev
-echo.
-echo 3. (Optional) Run as Electron app:
-echo    cd electron
-echo    npm run dev
-echo.
-echo For detailed instructions, see README.md
-echo ========================================
-pause
+@REM echo.
+@REM echo ========================================
+@REM echo          Setup Complete!
+@REM echo ========================================
+@REM echo.
+@REM echo Next Steps:
+@REM echo.
+@REM echo 1. Start the backend:
+@REM echo    cd backend
+@REM echo    venv\Scripts\activate.bat
+@REM echo    python main.py
+@REM echo.
+@REM echo 2. In a NEW terminal, start the frontend:
+@REM echo    cd frontend
+@REM echo    npm run dev
+@REM echo.
+@REM echo 3. (Optional) Run as Electron app:
+@REM echo    cd electron
+@REM echo    npm run dev
+@REM echo.
+@REM echo For detailed instructions, see README.md
+@REM echo ========================================
+@REM pause
