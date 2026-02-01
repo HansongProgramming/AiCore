@@ -67,10 +67,9 @@ if not exist "InstantSplat" (
     REM Create checkpoints directory
     if not exist "mast3r\checkpoints" mkdir mast3r\checkpoints
     
-    REM Download model
+    REM Download model (fixed - single line)
     echo Downloading MASt3R model (this may take a while - ~600MB)...
-    curl -L -o mast3r\checkpoints\MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth ^
-         https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+    curl -L -o mast3r\checkpoints\MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
     
     REM Install InstantSplat dependencies
     echo Installing InstantSplat requirements...
@@ -113,8 +112,8 @@ echo ========================================
 echo.
 echo Next Steps:
 echo.
-echo 1. Start backend: start-backend.bat
-echo 2. Start frontend: start-frontend.bat
+echo 1. Start backend: startBackend.bat
+echo 2. Start frontend: startFrontend.bat
 echo 3. Open browser: http://localhost:3000
 echo.
 echo ========================================
