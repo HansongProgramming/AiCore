@@ -1,114 +1,228 @@
-import React, { useState, useRef } from 'react';
+import { useState } from 'react';
 import './ImageUpload.css';
 
-function ImageUpload({ onImagesSelected, minImages = 2, maxImages = 10 }) {
-  const [previews, setPreviews] = useState([]);
-  const [dragActive, setDragActive] = useState(false);
-  const fileInputRef = useRef(null);
+function ImageUpload({ onUploadComplete }) {
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [healthStatus, setHealthStatus] = useState(null);
 
-  const handleFiles = (files) => {
-    const fileArray = Array.from(files);
-    
-    // Validate file count
-    if (fileArray.length < minImages) {
-      alert(`Please select at least ${minImages} images`);
-      return;
-    }
-    
-    if (fileArray.length > maxImages) {
-      alert(`Maximum ${maxImages} images allowed`);
-      return;
-    }
+  // Check backend health on mount
+  useState(() => {
+    checkHealth();
+  }, []);
 
+  const checkHealth = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/health');
+      const data = await response.json();
+      setHealthStatus(data);
+      
+      if (!data.instantsplat_installed) {
+        setError({
+          message: 'InstantSplat not properly installed',
+          details: data.checks
+        });
+      }
+    } catch (err) {
+      setError({
+        message: 'Cannot connect to backend',
+        details: err.message
+      });
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const selectedFiles = Array.from(e.target.files);
+    
     // Validate file types
-    const validFiles = fileArray.filter(file => 
+    const validFiles = selectedFiles.filter(file => 
       file.type.startsWith('image/')
     );
+    
+    if (validFiles.length !== selectedFiles.length) {
+      setError({
+        message: 'Some files were not images and were skipped'
+      });
+    }
+    
+    setFiles(validFiles);
+    setError(null);
+  };
 
-    if (validFiles.length !== fileArray.length) {
-      alert('Please select only image files (JPG, PNG, etc.)');
+  const handleUpload = async () => {
+    if (files.length < 3) {
+      setError({
+        message: 'Please select at least 3 images'
+      });
       return;
     }
 
-    // Create previews
-    const previewUrls = validFiles.map(file => URL.createObjectURL(file));
-    setPreviews(previewUrls);
+    setUploading(true);
+    setError(null);
 
-    // Send to parent
-    onImagesSelected(validFiles);
-  };
+    const formData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file);
+    });
 
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
+    try {
+      const response = await fetch('http://localhost:8000/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail?.error || errorData.detail || 'Upload failed');
+      }
+
+      const data = await response.json();
+      setSessionId(data.session_id);
+      setUploading(false);
+      
+      // Start reconstruction
+      handleReconstruct(data.session_id);
+      
+    } catch (err) {
+      setError({
+        message: 'Upload failed',
+        details: err.message
+      });
+      setUploading(false);
     }
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
+  const handleReconstruct = async (sid) => {
+    setProcessing(true);
+    setError(null);
 
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFiles(e.dataTransfer.files);
+    try {
+      const response = await fetch(`http://localhost:8000/reconstruct/${sid}`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail?.error || errorData.detail || 'Reconstruction failed');
+      }
+
+      const data = await response.json();
+      
+      // Download the result
+      const downloadUrl = `http://localhost:8000/download/${sid}/${data.output_file}`;
+      setProcessing(false);
+      
+      if (onUploadComplete) {
+        onUploadComplete(downloadUrl);
+      }
+      
+    } catch (err) {
+      setError({
+        message: 'Reconstruction failed',
+        details: err.message
+      });
+      setProcessing(false);
     }
   };
 
-  const handleChange = (e) => {
-    e.preventDefault();
-    if (e.target.files && e.target.files.length > 0) {
-      handleFiles(e.target.files);
-    }
+  const renderError = () => {
+    if (!error) return null;
+
+    return (
+      <div className="error-box">
+        <h3>❌ Error</h3>
+        <p>{error.message}</p>
+        {error.details && typeof error.details === 'object' && (
+          <details>
+            <summary>Details</summary>
+            <pre>{JSON.stringify(error.details, null, 2)}</pre>
+          </details>
+        )}
+        {error.details && typeof error.details === 'string' && (
+          <p className="error-details">{error.details}</p>
+        )}
+      </div>
+    );
   };
 
-  const handleButtonClick = () => {
-    fileInputRef.current?.click();
+  const renderHealthStatus = () => {
+    if (!healthStatus) return null;
+
+    return (
+      <div className={`health-status ${healthStatus.status}`}>
+        <h4>Backend Status: {healthStatus.status === 'ok' ? '✓' : '✗'}</h4>
+        {healthStatus.checks && (
+          <details>
+            <summary>Installation Details</summary>
+            <ul>
+              {Object.entries(healthStatus.checks).map(([key, value]) => (
+                <li key={key}>
+                  {value ? '✓' : '✗'} {key}: {value ? 'OK' : 'Missing'}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    );
   };
 
   return (
-    <div className="image-upload">
-      <div
-        className={`upload-dropzone ${dragActive ? 'drag-active' : ''}`}
-        onDragEnter={handleDrag}
-        onDragLeave={handleDrag}
-        onDragOver={handleDrag}
-        onDrop={handleDrop}
-        onClick={handleButtonClick}
-      >
+    <div className="upload-container">
+      <h2>Upload Images for 3D Reconstruction</h2>
+      
+      {renderHealthStatus()}
+      {renderError()}
+      
+      <div className="upload-section">
         <input
-          ref={fileInputRef}
           type="file"
           multiple
           accept="image/*"
-          onChange={handleChange}
-          style={{ display: 'none' }}
+          onChange={handleFileChange}
+          disabled={uploading || processing}
         />
         
-        <div className="upload-content">
-          <div className="upload-icon">📷</div>
-          <h3>Upload Your Photos</h3>
-          <p>Drag and drop {minImages}-{maxImages} images here</p>
-          <p className="upload-or">or</p>
-          <button className="btn-select">Select Files</button>
-        </div>
-      </div>
-
-      {previews.length > 0 && (
-        <div className="preview-grid">
-          <h4>Selected Images ({previews.length})</h4>
-          <div className="preview-images">
-            {previews.map((preview, index) => (
-              <div key={index} className="preview-item">
-                <img src={preview} alt={`Preview ${index + 1}`} />
-              </div>
-            ))}
+        {files.length > 0 && (
+          <div className="file-list">
+            <h3>Selected Files ({files.length}):</h3>
+            <ul>
+              {files.map((file, index) => (
+                <li key={index}>
+                  {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
-      )}
+        )}
+        
+        <button
+          onClick={handleUpload}
+          disabled={files.length < 3 || uploading || processing}
+          className="upload-button"
+        >
+          {uploading && 'Uploading...'}
+          {processing && 'Processing (this may take a few minutes)...'}
+          {!uploading && !processing && 'Upload & Reconstruct'}
+        </button>
+        
+        {files.length > 0 && files.length < 3 && (
+          <p className="warning">Please select at least 3 images</p>
+        )}
+      </div>
+      
+      <div className="instructions">
+        <h3>Instructions:</h3>
+        <ul>
+          <li>Select at least 3 images of the same object/scene from different angles</li>
+          <li>Images should have good overlap between views</li>
+          <li>Better coverage = better 3D reconstruction</li>
+          <li>Processing typically takes 2-5 minutes depending on image count</li>
+        </ul>
+      </div>
     </div>
   );
 }
