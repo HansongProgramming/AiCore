@@ -10,10 +10,10 @@ import json
 
 app = FastAPI()
 
-# CORS settings
+# CORS settings - Allow all origins for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,7 +46,8 @@ async def root():
     return {
         "message": "InstantSplat Backend API",
         "backend_dir": str(BACKEND_DIR),
-        "instantsplat_path": str(INSTANTSPLAT_PATH)
+        "instantsplat_path": str(INSTANTSPLAT_PATH),
+        "status": "online"
     }
 
 @app.get("/health")
@@ -213,6 +214,7 @@ if __name__ == "__main__":
         print("\n✗ Some components are missing. Please run setup.bat")
     
     print("\nStarting server on http://localhost:8000")
+    print("CORS enabled for all origins")
     print("="*50 + "\n")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
