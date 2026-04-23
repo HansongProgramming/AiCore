@@ -1,333 +1,214 @@
-@echo off
-setlocal EnableDelayedExpansion
+"""
+AiCore InstantSplat Setup Script
+---------------------------------
+Run this from the InstantSplat_Windows root folder.
 
-echo ============================================
-echo  AiCore(scan) - Full Setup Script
-echo ============================================
-echo.
-echo  Run this from: x64 Native Tools Command Prompt for VS 2022
-echo  This will take 20-40 minutes depending on your internet.
-echo.
-pause
+What it does:
+  1. Patches all submodule setup.py files with --allow-unsupported-compiler flags
+  2. Patches gradio UI to allow more than 12 views
+  3. Provides image preprocessing (resize + HEIC convert) before running inference
+"""
 
-:: ─── CONFIG ───────────────────────────────────
-set PROJECT_DIR=D:\Projekts\Cre8TiveSync\AiCore(scan)
-set CONDA_ENV=aicorescan
-set PYTHON_VERSION=3.10.13
-set PYTORCH_VERSION=2.1.2
-set CUDA_VERSION=12.1
-set MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+import os
+import re
+import sys
+import shutil
+from pathlib import Path
 
-:: ─── CHECKS ───────────────────────────────────
-echo [1/8] Checking prerequisites...
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-where conda >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: conda not found. Please install Miniconda first.
-    echo Download: https://docs.conda.io/en/latest/miniconda.html
-    pause & exit /b 1
-)
+def log(msg, level="INFO"):
+    prefix = {"INFO": "  ", "OK": "✓ ", "FAIL": "✗ ", "STEP": "\n▶ "}
+    print(f"{prefix.get(level, '  ')}{msg}")
 
-where node >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Node.js not found. Please install Node.js LTS first.
-    echo Download: https://nodejs.org
-    pause & exit /b 1
-)
+def patch_file(filepath, find, replace, label):
+    path = Path(filepath)
+    if not path.exists():
+        log(f"Not found, skipping: {filepath}", "FAIL")
+        return False
+    content = path.read_text(encoding="utf-8")
+    if find not in content:
+        if "--allow-unsupported-compiler" in content:
+            log(f"Already patched: {label}", "OK")
+            return True
+        log(f"Pattern not found in {label} — may need manual check", "FAIL")
+        return False
+    patched = content.replace(find, replace)
+    path.write_text(patched, encoding="utf-8")
+    log(f"Patched: {label}", "OK")
+    return True
 
-where git >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Git not found. Please install Git first.
-    echo Download: https://git-scm.com
-    pause & exit /b 1
-)
+# ── Step 1: Patch submodule setup.py files ────────────────────────────────────
 
-where cl >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: MSVC compiler (cl) not found.
-    echo Please run this from x64 Native Tools Command Prompt for VS 2022.
-    pause & exit /b 1
-)
+def patch_submodules():
+    log("Patching submodule setup.py files", "STEP")
 
-where nvcc >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: nvcc not found. Please install CUDA Toolkit 12.1.
-    echo Download: https://developer.nvidia.com/cuda-12-1-0-download-archive
-    pause & exit /b 1
-)
-
-echo    conda  - OK
-echo    node   - OK
-echo    git    - OK
-echo    cl     - OK
-echo    nvcc   - OK
-
-:: ─── PROJECT FOLDER ───────────────────────────
-echo.
-echo [2/8] Creating project folder structure...
-
-mkdir "%PROJECT_DIR%" 2>nul
-mkdir "%PROJECT_DIR%\backend" 2>nul
-mkdir "%PROJECT_DIR%\backend\api" 2>nul
-mkdir "%PROJECT_DIR%\backend\pipeline" 2>nul
-mkdir "%PROJECT_DIR%\backend\weights" 2>nul
-mkdir "%PROJECT_DIR%\frontend" 2>nul
-mkdir "%PROJECT_DIR%\frontend\src" 2>nul
-mkdir "%PROJECT_DIR%\frontend\src\viewer" 2>nul
-mkdir "%PROJECT_DIR%\frontend\src\tools" 2>nul
-mkdir "%PROJECT_DIR%\electron" 2>nul
-mkdir "%PROJECT_DIR%\outputs" 2>nul
-
-echo    Done.
-
-:: ─── CONDA ENV ────────────────────────────────
-echo.
-echo [3/8] Creating fresh conda environment: %CONDA_ENV%...
-
-call conda env remove -n %CONDA_ENV% -y 2>nul
-
-call conda create -n %CONDA_ENV% python=%PYTHON_VERSION% cmake=3.14.0 -y
-if errorlevel 1 (
-    echo ERROR: Failed to create conda environment.
-    pause & exit /b 1
-)
-
-call conda activate %CONDA_ENV%
-
-:: Set all required env vars for CUDA compilation
-set DISTUTILS_USE_SDK=1
-set CUDA_HOME=%CONDA_PREFIX%
-set CUDA_PATH=%CONDA_PREFIX%
-set TORCH_CUDA_ARCH_LIST=7.5;8.6
-set PATH=%CONDA_PREFIX%\Library\bin;%PATH%
-
-echo    Installing PyTorch %PYTORCH_VERSION% with CUDA %CUDA_VERSION%...
-call conda install pytorch==%PYTORCH_VERSION% torchvision pytorch-cuda=%CUDA_VERSION% -c pytorch -c nvidia -y
-if errorlevel 1 (
-    echo ERROR: Failed to install PyTorch.
-    pause & exit /b 1
-)
-
-call pip install --no-cache-dir "numpy<2" "opencv-python<4.12"
-call pip install -U pip setuptools wheel
-
-echo    PyTorch installed.
-
-:: ─── GSPLAT ───────────────────────────────────
-echo.
-echo [4/8] Installing gsplat...
-echo    (gsplat compiles CUDA kernels on first run - this may take 10-15 mins)
-
-call pip install gsplat
-if errorlevel 1 (
-    echo ERROR: gsplat installation failed.
-    pause & exit /b 1
-)
-
-echo    gsplat installed.
-
-:: ─── MAST3R ───────────────────────────────────
-echo.
-echo [5/8] Setting up MASt3R...
-
-cd /d "%PROJECT_DIR%\backend"
-
-if not exist "mast3r" (
-    echo    Cloning MASt3R...
-    git clone https://github.com/naver/mast3r.git
-    if errorlevel 1 (
-        echo ERROR: Failed to clone MASt3R.
-        pause & exit /b 1
+    # simple-knn
+    patch_file(
+        "submodules/simple-knn/setup.py",
+        'extra_compile_args={"nvcc": [], "cxx": cxx_compiler_flags})',
+        'extra_compile_args={"nvcc": ["--allow-unsupported-compiler", "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"], "cxx": cxx_compiler_flags})',
+        "simple-knn"
     )
-)
 
-cd mast3r
-
-echo    Initializing submodules...
-git submodule update --init --recursive
-if errorlevel 1 (
-    echo ERROR: Failed to init MASt3R submodules.
-    pause & exit /b 1
-)
-
-echo    Installing MASt3R...
-call pip install -e ".[dust3r]"
-if errorlevel 1 (
-    echo ERROR: MASt3R pip install failed.
-    pause & exit /b 1
-)
-
-echo    Downloading MASt3R weights (~1.5GB)...
-if not exist "%PROJECT_DIR%\backend\weights\MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" (
-    powershell -Command "& { Invoke-WebRequest -Uri '%MAST3R_WEIGHTS_URL%' -OutFile '%PROJECT_DIR%\backend\weights\MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth' -UseBasicParsing }"
-    if errorlevel 1 (
-        echo WARNING: Weight download failed. Download manually from:
-        echo %MAST3R_WEIGHTS_URL%
-        echo Save to: %PROJECT_DIR%\backend\weights\
-    ) else (
-        echo    Weights downloaded.
+    # diff-gaussian-rasterization
+    patch_file(
+        "submodules/diff-gaussian-rasterization/setup.py",
+        'extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})',
+        'extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"), "--allow-unsupported-compiler", "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"]})',
+        "diff-gaussian-rasterization"
     )
-) else (
-    echo    Weights already exist, skipping.
-)
 
-cd /d "%PROJECT_DIR%\backend"
+    # fused-ssim — has no extra_compile_args so we insert one
+    fused_path = Path("submodules/fused-ssim/setup.py")
+    if fused_path.exists():
+        content = fused_path.read_text(encoding="utf-8")
+        if "--allow-unsupported-compiler" in content:
+            log("Already patched: fused-ssim", "OK")
+        elif '"ext.cpp"])' in content:
+            patched = content.replace(
+                '"ext.cpp"])',
+                '"ext.cpp"],\n            extra_compile_args={"nvcc": ["--allow-unsupported-compiler", "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"]})'
+            )
+            fused_path.write_text(patched, encoding="utf-8")
+            log("Patched: fused-ssim", "OK")
+        else:
+            log("fused-ssim pattern not found — may need manual check", "FAIL")
 
-:: ─── SUGAR ────────────────────────────────────
-echo.
-echo [6/8] Setting up SuGaR...
-
-if not exist "sugar" (
-    echo    Cloning SuGaR...
-    git clone https://github.com/Anttwo/SuGaR.git sugar
-    if errorlevel 1 (
-        echo ERROR: Failed to clone SuGaR.
-        pause & exit /b 1
+    # curope (RoPE kernels)
+    patch_file(
+        "croco/models/curope/setup.py",
+        "nvcc=['-O3','--ptxas-options=-v',\"--use_fast_math\"]+all_cuda_archs,",
+        "nvcc=['-O3','--ptxas-options=-v',\"--use_fast_math\",\"--allow-unsupported-compiler\",\"-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH\"]+all_cuda_archs,",
+        "curope (RoPE kernels)"
     )
-)
 
-cd sugar
+# ── Step 2: Patch gradio UI for more views ────────────────────────────────────
 
-echo    Installing SuGaR base dependencies...
-call pip install open3d PyMCubes trimesh plyfile roma einops
-call pip install -e .
+def patch_gradio():
+    log("Patching Gradio UI view limit", "STEP")
 
-:: Build SuGaR CUDA submodules with all env vars set
-echo    Building SuGaR CUDA extensions...
+    gradio_path = Path("instantsplat_gradio.py")
+    if not gradio_path.exists():
+        log("instantsplat_gradio.py not found", "FAIL")
+        return
 
-if exist "gaussian_splatting\submodules\diff-gaussian-rasterization" (
-    cd gaussian_splatting\submodules\diff-gaussian-rasterization
-    call pip install -v --no-build-isolation .
-    if errorlevel 1 (
-        echo WARNING: diff-gaussian-rasterization failed.
-        echo You may need to build this manually later.
-    ) else (
-        echo    diff-gaussian-rasterization OK.
+    content = gradio_path.read_text(encoding="utf-8")
+
+    # Bump slider maximum from 12 to 50
+    patched = re.sub(
+        r'(gr\.Slider\([^)]*maximum\s*=\s*)12',
+        r'\g<1>50',
+        content
     )
-    cd /d "%PROJECT_DIR%\backend\sugar"
-)
 
-if exist "gaussian_splatting\submodules\simple-knn" (
-    cd gaussian_splatting\submodules\simple-knn
-    call pip install -v --no-build-isolation .
-    if errorlevel 1 (
-        echo WARNING: simple-knn failed.
-        echo You may need to build this manually later.
-    ) else (
-        echo    simple-knn OK.
-    )
-    cd /d "%PROJECT_DIR%\backend\sugar"
-)
+    if patched == content:
+        log("Gradio view limit already patched or pattern changed", "OK")
+    else:
+        gradio_path.write_text(patched, encoding="utf-8")
+        log("Gradio UI: max views raised to 50", "OK")
 
-cd /d "%PROJECT_DIR%"
+# ── Step 3: Image preprocessing ───────────────────────────────────────────────
 
-:: ─── FASTAPI ──────────────────────────────────
-echo    Installing FastAPI...
-call pip install fastapi uvicorn python-multipart aiofiles
+def preprocess_images(input_folder, output_folder=None, max_width=1600):
+    log(f"Preprocessing images in: {input_folder}", "STEP")
 
-:: ─── FRONTEND ─────────────────────────────────
-echo.
-echo [7/8] Setting up Electron + React frontend...
+    try:
+        from PIL import Image
+    except ImportError:
+        log("Pillow not installed. Run: pip install pillow", "FAIL")
+        return
 
-cd /d "%PROJECT_DIR%\frontend"
+    # Try HEIC support
+    heic_supported = False
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+        heic_supported = True
+        log("HEIC support enabled", "OK")
+    except ImportError:
+        log("HEIC support not available (pip install pillow-heif to enable)", "INFO")
 
-(
-echo {
-echo   "name": "aicorescan-frontend",
-echo   "version": "1.0.0",
-echo   "private": true,
-echo   "scripts": {
-echo     "dev": "vite",
-echo     "build": "vite build"
-echo   },
-echo   "dependencies": {
-echo     "react": "^18.2.0",
-echo     "react-dom": "^18.2.0",
-echo     "three": "^0.160.0",
-echo     "@react-three/fiber": "^8.15.0",
-echo     "@react-three/drei": "^9.92.0"
-echo   },
-echo   "devDependencies": {
-echo     "vite": "^5.0.0",
-echo     "@vitejs/plugin-react": "^4.2.0"
-echo   }
-echo }
-) > package.json
+    input_path = Path(input_folder)
+    if not input_path.exists():
+        log(f"Input folder not found: {input_folder}", "FAIL")
+        return
 
-call npm install
-if errorlevel 1 (
-    echo ERROR: Frontend npm install failed.
-    pause & exit /b 1
-)
+    # If no output folder, create an 'images' subfolder inside input
+    if output_folder is None:
+        out_path = input_path / "images"
+    else:
+        out_path = Path(output_folder)
+    out_path.mkdir(parents=True, exist_ok=True)
 
-echo    Frontend deps installed.
+    extensions = [".jpg", ".jpeg", ".png", ".tiff", ".tif"]
+    if heic_supported:
+        extensions += [".heic", ".HEIC"]
 
-cd /d "%PROJECT_DIR%\electron"
+    files = [f for f in input_path.iterdir() if f.suffix.lower() in extensions]
 
-(
-echo {
-echo   "name": "aicorescan",
-echo   "version": "1.0.0",
-echo   "main": "main.js",
-echo   "scripts": {
-echo     "start": "electron ."
-echo   },
-echo   "dependencies": {
-echo     "electron": "^28.0.0"
-echo   }
-echo }
-) > package.json
+    if not files:
+        log("No supported image files found", "FAIL")
+        return
 
-call npm install
-if errorlevel 1 (
-    echo ERROR: Electron npm install failed.
-    pause & exit /b 1
-)
+    log(f"Found {len(files)} images, resizing to max width {max_width}px", "INFO")
 
-echo    Electron installed.
+    for f in files:
+        try:
+            img = Image.open(f)
+            w, h = img.size
 
-cd /d "%PROJECT_DIR%"
+            if w > max_width:
+                ratio = max_width / w
+                new_size = (max_width, int(h * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+                log(f"{f.name}: {w}x{h} → {new_size[0]}x{new_size[1]}", "INFO")
+            else:
+                log(f"{f.name}: {w}x{h} (no resize needed)", "INFO")
 
-:: ─── START-DEV HELPER ─────────────────────────
-echo.
-echo [8/8] Creating start-dev.bat helper...
+            # Always save as JPG for consistency
+            out_file = out_path / (f.stem + ".jpg")
+            img.convert("RGB").save(out_file, "JPEG", quality=95)
 
-(
-echo @echo off
-echo echo ============================================
-echo echo  AiCore^(scan^) Dev Environment
-echo echo ============================================
-echo call C:\Users\%USERNAME%\miniconda3\Scripts\activate.bat
-echo call conda activate %CONDA_ENV%
-echo set DISTUTILS_USE_SDK=1
-echo set CUDA_HOME=%%CONDA_PREFIX%%
-echo set CUDA_PATH=%%CONDA_PREFIX%%
-echo set TORCH_CUDA_ARCH_LIST=7.5;8.6
-echo set WEIGHTS_PATH=%PROJECT_DIR%\backend\weights\MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
-echo cd /d "%PROJECT_DIR%"
-echo echo.
-echo echo  Environment ready^^!
-echo echo  Commands:
-echo echo    Backend  : uvicorn backend.api.main:app --reload
-echo echo    Frontend : cd frontend ^&^& npm run dev
-echo echo    Electron : cd electron ^&^& npm start
-echo echo.
-echo cmd /k
-) > "%PROJECT_DIR%\start-dev.bat"
+        except Exception as e:
+            log(f"Failed to process {f.name}: {e}", "FAIL")
 
-:: ─── DONE ─────────────────────────────────────
-echo.
-echo ============================================
-echo  Setup Complete!
-echo ============================================
-echo.
-echo  Project  : %PROJECT_DIR%
-echo  Env      : %CONDA_ENV%
-echo  Weights  : %PROJECT_DIR%\backend\weights\
-echo.
-echo  To start: run %PROJECT_DIR%\start-dev.bat
-echo  (from x64 Native Tools Command Prompt)
-echo.
-echo  NOTE: gsplat compiles on first use - first pipeline run will be slow.
-echo.
-pause
+    log(f"Done. Images saved to: {out_path}", "OK")
+    log(f"Use this path in InstantSplat: {out_path}", "INFO")
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    args = sys.argv[1:]
+
+    if not args or args[0] == "patch":
+        # Run from InstantSplat_Windows root
+        root = Path(".")
+        if not (root / "instantsplat_gradio.py").exists():
+            log("Run this script from your InstantSplat_Windows root folder.", "FAIL")
+            log("Example: cd E:\\AiCore-Splat\\InstantSplat_Windows && python aicore_setup.py patch", "INFO")
+            sys.exit(1)
+
+        patch_submodules()
+        patch_gradio()
+        log("\nAll patches applied. Now run:", "OK")
+        log("  pip install --no-build-isolation submodules/simple-knn", "INFO")
+        log("  pip install --no-build-isolation submodules/diff-gaussian-rasterization", "INFO")
+        log("  pip install --no-build-isolation submodules/fused-ssim", "INFO")
+        log("  cd croco/models/curope && python setup.py build_ext --inplace && cd ../../..", "INFO")
+
+    elif args[0] == "prep":
+        if len(args) < 2:
+            log("Usage: python aicore_setup.py prep <image_folder> [output_folder]", "FAIL")
+            sys.exit(1)
+        input_folder = args[1]
+        output_folder = args[2] if len(args) > 2 else None
+        preprocess_images(input_folder, output_folder)
+
+    else:
+        print("Usage:")
+        print("  python aicore_setup.py patch          — patch all setup.py files")
+        print("  python aicore_setup.py prep <folder>  — resize + convert images")
+
+if __name__ == "__main__":
+    main()
